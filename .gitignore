@@ -1,0 +1,19 @@
+# Entornos virtuales
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+
+# Configuración local
+.env
+
+# Archivos temporales
+*.log
+
+# VSCode
+.vscode/
+
+# __local_uploads__ (si existiera)
+local_uploads/
