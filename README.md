@@ -1,7 +1,7 @@
 # 🧪 Evaluación Técnica OneCore — Parte 1  
 API Web con Python + FastAPI + JWT + S3 + SQL Server
 
-Este proyecto corresponde a la **Parte 1** de la evaluación técnica para OneCore**, donde se desarrolla una aplicación backend en Python utilizando **FastAPI**, con autenticación mediante **JWT**, carga y validación de archivos CSV, almacenamiento en **AWS S3** y persistencia en **SQL Server**.
+**Parte 1** de la evaluación técnica para OneCore**, donde se desarrolla una aplicación backend en Python utilizando **FastAPI**, con autenticación mediante **JWT**, carga y validación de archivos CSV, almacenamiento en **AWS S3** y persistencia en **SQL Server**.
 
 ---
 
