@@ -1,9 +1,10 @@
-import io
+# app/aws_s3.py
 import uuid
+import io
 import boto3
 from botocore.client import Config
-from .config import settings
 
+from .config import settings
 
 # Cliente S3
 s3 = boto3.client(
@@ -17,28 +18,38 @@ s3 = boto3.client(
 BUCKET = settings.AWS_BUCKET
 
 
+def _guess_content_type(filename: str) -> str:
+    name = filename.lower()
+
+    if name.endswith(".csv"):
+        return "text/csv"
+    if name.endswith(".pdf"):
+        return "application/pdf"
+    if name.endswith(".jpg") or name.endswith(".jpeg"):
+        return "image/jpeg"
+    if name.endswith(".png"):
+        return "image/png"
+
+    return "application/octet-stream"
+
+
 def save_file(file_obj: io.BytesIO, filename: str):
     """
-    Guarda un archivo en S3.
+    Guarda un archivo genérico en S3 y devuelve (tipo, clave).
 
-    file_obj -> BytesIO
-    filename -> nombre original del archivo
+    - file_obj: instancia de BytesIO (importante: se hace seek(0) dentro).
+    - filename: nombre original del archivo.
 
     return:
         ("s3", storage_key)
     """
-
-    # Nos aseguramos que el puntero está al inicio
     file_obj.seek(0)
 
-    # extensión real
     ext = filename.split(".")[-1].lower() if "." in filename else "bin"
     storage_key = f"uploads/{uuid.uuid4()}.{ext}"
 
-    # Tipo de contenido simple (ahora mismo solo usamos CSV)
-    content_type = "text/csv" if ext == "csv" else "application/octet-stream"
+    content_type = _guess_content_type(filename)
 
-    # Subir archivo
     s3.upload_fileobj(
         file_obj,
         BUCKET,

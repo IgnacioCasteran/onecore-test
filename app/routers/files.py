@@ -1,3 +1,4 @@
+# app/routers/files.py
 from fastapi import (
     APIRouter,
     UploadFile,
@@ -18,7 +19,7 @@ from ..db import get_db
 from ..models import CsvFile, EventLog, CsvRow
 from ..security import require_role
 from ..validators import validate_csv_file
-from ..aws_s3 import save_file  # esta función debe estar en aws_s3.py
+from ..aws_s3 import save_file  # función para guardar en S3 (o similar)
 
 
 router = APIRouter(prefix="/files", tags=["Files"])
@@ -30,14 +31,23 @@ router = APIRouter(prefix="/files", tags=["Files"])
     summary="Sube un archivo CSV, lo valida, lo guarda en S3 y registra el evento",
 )
 async def upload_csv(
-    csv_file: UploadFile = File(...),
-    dataset_name: str = Form(...),        # 🔹 parámetro adicional obligatorio
-    description: str = Form(...),         # 🔹 parámetro adicional obligatorio
+    file: UploadFile = File(...),               # 👈 nombre que usan los tests
+    dataset_name: str = Form(""),               # 👈 ahora OPCIONAL
+    description: str = Form(""),                # 👈 ahora OPCIONAL
     db: Session = Depends(get_db),
-    user=Depends(require_role("uploader")),  # solo usuarios con rol "uploader"
+    user=Depends(require_role("uploader")),     # solo usuarios con rol "uploader"
 ):
+    """
+    Endpoint para subir un CSV.
+
+    - Valida que tenga extensión .csv
+    - Lo guarda en S3 (o almacenamiento configurado)
+    - Valida el contenido con `validate_csv_file`
+    - Guarda registro en SQL Server (CsvFile + CsvRow)
+    - Registra evento UPLOAD_CSV en EventLog
+    """
     # 1) Validar extensión
-    if not csv_file.filename.lower().endswith(".csv"):
+    if not file.filename.lower().endswith(".csv"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Solo se permiten archivos con extensión .csv",
@@ -45,22 +55,19 @@ async def upload_csv(
 
     # 2) Leer contenido del archivo
     try:
-        file_bytes: bytes = await csv_file.read()
+        file_bytes: bytes = await file.read()
         if not file_bytes:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="El archivo CSV está vacío",
             )
     finally:
-        # Liberar el buffer interno de UploadFile
-        await csv_file.close()
+        await file.close()
 
     # 3) Guardar archivo en S3 (o donde defina save_file)
     try:
-        # BytesIO envuelve los bytes en un archivo en memoria tipo file-like
-        location_type, storage_key = save_file(BytesIO(file_bytes), csv_file.filename)
+        location_type, storage_key = save_file(BytesIO(file_bytes), file.filename)
     except Exception as e:
-        # Cualquier problema con S3 / almacenamiento
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al guardar el archivo: {str(e)}",
@@ -70,8 +77,6 @@ async def upload_csv(
     try:
         validation = validate_csv_file(file_bytes)
     except Exception as e:
-        # Si la validación explota, igual ya está guardado el archivo en S3,
-        # pero devolvemos que hubo un problema en la validación.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Error al validar el CSV: {str(e)}",
@@ -83,9 +88,9 @@ async def upload_csv(
     try:
         # Registro del archivo
         csv_record = CsvFile(
-            filename=csv_file.filename,
-            dataset_name=dataset_name,         # 🔹 guardamos parámetros extra
-            description=description,
+            filename=file.filename,
+            dataset_name=dataset_name or "",   # si viene vacío, guardamos string vacío
+            description=description or "",
             s3_key=storage_key,
             uploaded_by=int(user["sub"]),
             validation_summary=validation_json,
@@ -94,7 +99,7 @@ async def upload_csv(
         db.add(csv_record)
         db.flush()  # para tener csv_record.id antes del commit
 
-        # ===== Guardar filas del CSV en CsvRow =====
+        # Guardar filas del CSV en CsvRow
         text = file_bytes.decode("utf-8")
         reader = csv.DictReader(io_mod.StringIO(text))
 
@@ -112,11 +117,11 @@ async def upload_csv(
         event = EventLog(
             event_type="UPLOAD_CSV",
             description=(
-                f"Archivo {csv_file.filename} subido por usuario {user['sub']} "
+                f"Archivo {file.filename} subido por usuario {user['sub']} "
                 f"({location_type}:{storage_key}), "
-                f"dataset='{dataset_name}'"
+                f"dataset='{dataset_name or ''}'"
             ),
-            created_at=datetime.utcnow(),  # tu modelo lo permite aunque tenga default
+            created_at=datetime.utcnow(),
         )
         db.add(event)
 
@@ -132,12 +137,12 @@ async def upload_csv(
     # 7) Respuesta al cliente
     return {
         "file_id": csv_record.id,
-        "filename": csv_file.filename,
+        "filename": csv_record.filename,
         "dataset_name": csv_record.dataset_name,
         "description": csv_record.description,
         "storage": {
-            "type": location_type,  # por ejemplo: "s3"
-            "key": storage_key,     # ruta/clave dentro del bucket
+            "type": location_type,
+            "key": storage_key,
         },
-        "validation": validation,   # estructura que devuelve validate_csv_file
+        "validation": validation,
     }

@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>OneCore - Análisis de Documentos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- favicon/logo -->
+  <link rel="icon" type="image/png" href="onecore-logo.png" />
+  <style>
+    :root {
+      --primary: #00a5c8;
+      --primary-dark: #00809b;
+      --bg: #f5f7fb;
+      --card-bg: #ffffff;
+      --border: #dde3f0;
+      --text-main: #1f2933;
+      --text-muted: #6b7280;
+      --danger: #e11d48;
+      --success: #16a34a;
+      --shadow-soft: 0 10px 25px rgba(15, 23, 42, 0.08);
+      --radius-lg: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+      sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: radial-gradient(circle at top left, #e0f5fb, #f5f7fb);
+      color: var(--text-main);
+    }
+
+    .app {
+      max-width: 1100px;
+      margin: 24px auto 40px;
+      padding: 0 16px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-logo {
+      height: 32px;
+      width: auto;
+      display: block;
+    }
+
+    .brand-title {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+
+    .brand-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid rgba(148, 163, 184, 0.6);
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.7);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr);
+      gap: 20px;
+    }
+
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-soft);
+      padding: 18px 20px 18px;
+      border: 1px solid #e5e7eb;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .card-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(0, 165, 200, 0.08);
+      color: var(--primary-dark);
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    label {
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 3px;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="date"],
+    select,
+    textarea {
+      width: 100%;
+      font-size: 14px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      outline: none;
+      transition: border 0.15s ease, box-shadow 0.15s ease;
+      background: #f9fafb;
+    }
+
+    input[type="file"] {
+      font-size: 13px;
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 1px rgba(0, 165, 200, 0.25);
+      background: white;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 70px;
+    }
+
+    .btn {
+      border-radius: 999px;
+      border: none;
+      padding: 8px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-weight: 500;
+      transition: background 0.15s ease, box-shadow 0.15s ease,
+      transform 0.05s ease;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: white;
+      box-shadow: 0 10px 20px rgba(0, 165, 200, 0.3);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 22px rgba(0, 165, 200, 0.35);
+    }
+
+    .btn-secondary {
+      background: #eef2ff;
+      color: #4f46e5;
+    }
+
+    .btn-secondary:hover {
+      background: #e0e7ff;
+    }
+
+    .btn-sm {
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+
+    .status {
+      font-size: 12px;
+      margin-top: 6px;
+    }
+
+    .status.error {
+      color: var(--danger);
+    }
+
+    .status.ok {
+      color: var(--success);
+    }
+
+    .token-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(34, 197, 94, 0.08);
+      color: #15803d;
+      font-size: 11px;
+    }
+
+    .token-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.15);
+    }
+
+    .tabs {
+      display: inline-flex;
+      border-radius: 999px;
+      padding: 3px;
+      background: #e5f3f7;
+      margin-bottom: 10px;
+    }
+
+    .tab-btn {
+      border-radius: 999px;
+      border: none;
+      padding: 6px 13px;
+      font-size: 13px;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-muted);
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .tab-btn.active {
+      background: white;
+      color: var(--primary-dark);
+      box-shadow: 0 6px 12px rgba(148, 163, 184, 0.35);
+    }
+
+    .tab-panel {
+      display: none;
+      margin-top: 8px;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    /* Resultado de análisis bonito */
+    .analyze-summary {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #f9fafb;
+      border: 1px solid var(--border);
+      font-size: 13px;
+    }
+
+    .analyze-summary h4 {
+      margin: 0 0 6px 0;
+      font-size: 14px;
+    }
+
+    .analyze-summary dl {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 10px;
+      margin: 6px 0 0 0;
+    }
+
+    .analyze-summary dt {
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .analyze-summary dd {
+      margin: 0;
+    }
+
+    .json-toggle {
+      margin-top: 8px;
+      border-radius: 8px;
+      border: 1px solid #1f2933;
+      background: #0f172a;
+      color: #e5e7eb;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .json-toggle summary {
+      cursor: pointer;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #a5b4fc;
+      user-select: none;
+    }
+
+    .json-toggle pre {
+      margin: 0;
+      padding: 8px 10px 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .chips-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .chip {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #f3f4ff;
+      color: #4f46e5;
+    }
+
+    .chip-muted {
+      background: #e5e7eb;
+      color: #4b5563;
+    }
+
+    /* Tabla de eventos */
+    .events-table-wrapper {
+      margin-top: 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #f9fafb;
+      max-height: 260px;
+      overflow: auto;
+    }
+
+    table.events-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .events-table th,
+    .events-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .events-table thead th {
+      position: sticky;
+      top: 0;
+      background: #e5f3f7;
+      z-index: 1;
+      font-weight: 600;
+    }
+
+    .events-table td:nth-child(1) {
+      width: 50px;
+      white-space: nowrap;
+    }
+
+    .events-table td:nth-child(2) {
+      width: 90px;
+      white-space: nowrap;
+    }
+
+    .events-table td:nth-child(3) {
+      min-width: 200px;
+      max-width: 360px;
+    }
+
+    .events-table td:nth-child(4) {
+      width: 140px;
+      white-space: nowrap;
+    }
+
+    .event-type-pill {
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      text-align: center;
+      background: #e0f2fe;
+      color: #0369a1;
+      display: inline-block;
+    }
+
+    .muted {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    .flex-between {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .flex-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <img src="onecore-logo.png" alt="OneCore" class="brand-logo" />
+      <div>
+        <div class="brand-title">Módulo IA</div>
+        <div class="brand-sub">Análisis de documentos + Histórico de eventos</div>
+      </div>
+    </div>
+    <div class="pill">FastAPI · Tesseract · SQL Server · S3</div>
+  </header>
+
+  <div class="layout">
+    <!-- Izquierda: login + análisis -->
+    <div>
+      <!-- LOGIN -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Autenticación</div>
+            <div class="card-subtitle">
+              Genera un JWT para llamar a las APIs protegidas
+            </div>
+          </div>
+          <div id="token-indicator" class="token-chip" style="display:none;">
+            <div class="token-dot"></div>
+            Sesión activa
+          </div>
+        </div>
+        <form id="login-form">
+          <div>
+            <label for="login-username">Usuario</label>
+            <input
+              id="login-username"
+              type="text"
+              placeholder="(Opcional, no se usa en backend)"
+              autocomplete="off"
+            />
+          </div>
+          <div>
+            <label for="login-password">Contraseña</label>
+            <input
+              id="login-password"
+              type="password"
+              placeholder="(Opcional, no se usa en backend)"
+              autocomplete="off"
+            />
+          </div>
+          <div class="flex-between">
+            <button class="btn btn-primary" type="submit">
+              Iniciar sesión
+            </button>
+            <span id="login-status" class="status"></span>
+          </div>
+        </form>
+      </div>
+
+      <!-- ANALISIS DE DOCUMENTOS -->
+      <div class="card" style="margin-top: 20px;">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Análisis de documentos</div>
+            <div class="card-subtitle">
+              Sube un PDF/JPG/PNG, extrae texto, clasifica y registra el evento
+            </div>
+          </div>
+          <span class="badge">Parte 2 · Módulo de Análisis</span>
+        </div>
+
+        <form id="analyze-form">
+          <div>
+            <label for="doc-file">Archivo (PDF / JPG / PNG)</label>
+            <input
+              id="doc-file"
+              type="file"
+              name="file"
+              accept="application/pdf,image/*"
+              required
+            />
+          </div>
+          <div>
+            <label for="doc-description">Descripción (opcional)</label>
+            <textarea
+              id="doc-description"
+              name="description"
+              placeholder="Ej: Factura prueba diciembre, carta de presentación, etc."
+            ></textarea>
+          </div>
+          <div class="flex-between">
+            <button class="btn btn-primary" type="submit">
+              Analizar documento
+            </button>
+            <span id="analyze-status" class="status"></span>
+          </div>
+        </form>
+
+        <div id="analyze-result" style="display:none;">
+          <div class="analyze-summary" id="analyze-summary"></div>
+
+          <details class="json-toggle">
+            <summary>Ver JSON completo</summary>
+            <pre id="analyze-json"></pre>
+          </details>
+        </div>
+      </div>
+    </div>
+
+    <!-- Derecha: histórico -->
+    <div>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Histórico de eventos</div>
+            <div class="card-subtitle">
+              Filtra por tipo, texto o rango de fechas. Exporta a Excel.
+            </div>
+          </div>
+          <div class="tabs">
+            <button class="tab-btn active" data-tab="events-tab" type="button">
+              Lista
+            </button>
+            <button class="tab-btn" data-tab="export-tab" type="button">
+              Exportar
+            </button>
+          </div>
+        </div>
+
+        <!-- TAB LISTA -->
+        <div id="events-tab" class="tab-panel active">
+          <form id="events-filter-form">
+            <div class="flex-row" style="gap:10px; flex-wrap:wrap;">
+              <div style="flex:1 1 90px; min-width:90px;">
+                <label for="event-type">Tipo</label>
+                <select id="event-type" name="event_type">
+                  <option value="">Todos</option>
+                  <option value="UPLOAD_CSV">UPLOAD_CSV</option>
+                  <option value="DOC_ANALYSIS">DOC_ANALYSIS</option>
+                </select>
+              </div>
+              <div style="flex:2 1 160px; min-width:140px;">
+                <label for="event-text">Texto en descripción</label>
+                <input
+                  id="event-text"
+                  type="text"
+                  name="description"
+                  placeholder="Ej: prueba, diciembre, factura..."
+                />
+              </div>
+              <div style="flex:1 1 120px; min-width:120px;">
+                <label for="date-from">Desde</label>
+                <input id="date-from" type="date" name="date_from" />
+              </div>
+              <div style="flex:1 1 120px; min-width:120px;">
+                <label for="date-to">Hasta</label>
+                <input id="date-to" type="date" name="date_to" />
+              </div>
+            </div>
+            <div class="flex-between" style="margin-top:8px;">
+              <div class="flex-row">
+                <button class="btn btn-primary btn-sm" type="submit">
+                  Buscar
+                </button>
+                <button
+                  class="btn btn-secondary btn-sm"
+                  type="button"
+                  id="btn-clear-filters"
+                >
+                  Limpiar
+                </button>
+              </div>
+              <span id="events-status" class="status"></span>
+            </div>
+          </form>
+
+          <div class="events-table-wrapper" id="events-wrapper" style="display:none;">
+            <table class="events-table">
+              <thead>
+              <tr>
+                <th>ID</th>
+                <th>Tipo</th>
+                <th>Descripción</th>
+                <th>Fecha</th>
+              </tr>
+              </thead>
+              <tbody id="events-tbody">
+              <!-- filas dinámicas -->
+              </tbody>
+            </table>
+          </div>
+          <div id="events-empty" class="muted" style="margin-top:8px;">
+            No se han cargado eventos todavía.
+          </div>
+        </div>
+
+        <!-- TAB EXPORT -->
+        <div id="export-tab" class="tab-panel">
+          <p class="card-subtitle" style="margin-bottom:10px;">
+            Usa los mismos filtros para generar un archivo Excel descargable
+            desde <code>/events/export</code>.
+          </p>
+          <form id="export-form">
+            <div class="flex-row" style="gap:10px; flex-wrap:wrap;">
+              <div style="flex:1 1 90px; min-width:90px;">
+                <label for="export-type">Tipo</label>
+                <select id="export-type" name="event_type">
+                  <option value="">Todos</option>
+                  <option value="UPLOAD_CSV">UPLOAD_CSV</option>
+                  <option value="DOC_ANALYSIS">DOC_ANALYSIS</option>
+                </select>
+              </div>
+              <div style="flex:1 1 140px; min-width:140px;">
+                <label for="export-from">Desde</label>
+                <input id="export-from" type="date" name="date_from" />
+              </div>
+              <div style="flex:1 1 140px; min-width:140px;">
+                <label for="export-to">Hasta</label>
+                <input id="export-to" type="date" name="date_to" />
+              </div>
+            </div>
+            <div class="flex-between" style="margin-top:10px;">
+              <button class="btn btn-primary" type="submit">
+                Exportar a Excel
+              </button>
+              <span id="export-status" class="status"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="chips-row" style="margin-top:12px;">
+        <div class="chip">Clasificación automática</div>
+        <div class="chip">Extracción con Tesseract OCR</div>
+        <div class="chip">Histórico en SQL Server</div>
+        <div class="chip chip-muted">Export a Excel</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- JS separado -->
+<script src="app.js"></script>
+</body>
+</html>
