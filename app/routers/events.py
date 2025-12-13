@@ -1,10 +1,14 @@
 # app/routers/events.py
-from fastapi import APIRouter, Depends, Query, HTTPException
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from io import BytesIO
+from typing import Any, Dict, List
+
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from datetime import datetime
-from io import BytesIO
-import pandas as pd
 
 from ..db import get_db
 from ..models import EventLog
@@ -13,20 +17,17 @@ from ..security import require_role
 router = APIRouter(prefix="/events", tags=["Events"])
 
 
-@router.get(
-    "",
-    summary="Lista el histórico de eventos con filtros opcionales",
-)
-def list_events(
-    db: Session = Depends(get_db),
-    event_type: str | None = Query(None),
-    description: str | None = Query(None),
-    date_from: datetime | None = Query(None),
-    date_to: datetime | None = Query(None),
-    user=Depends(require_role("uploader")),  # podrías cambiar a 'admin' si quieres
-):
-    query = db.query(EventLog)
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
+
+def _apply_filters(
+    query,
+    event_type: str | None,
+    description: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+):
     if event_type:
         query = query.filter(EventLog.event_type == event_type)
 
@@ -38,6 +39,21 @@ def list_events(
 
     if date_to:
         query = query.filter(EventLog.created_at <= date_to)
+
+    return query
+
+
+@router.get("", summary="Lista el histórico de eventos con filtros opcionales")
+def list_events(
+    db: Session = Depends(get_db),
+    event_type: str | None = Query(None),
+    description: str | None = Query(None),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
+    user: Dict[str, Any] = Depends(require_role("uploader")),
+) -> List[Dict[str, Any]]:
+    query = db.query(EventLog)
+    query = _apply_filters(query, event_type, description, date_from, date_to)
 
     events = query.order_by(EventLog.created_at.desc()).all()
 
@@ -52,31 +68,17 @@ def list_events(
     ]
 
 
-@router.get(
-    "/export",
-    summary="Exporta el histórico de eventos filtrado a un archivo Excel",
-)
+@router.get("/export", summary="Exporta el histórico de eventos filtrado a un archivo Excel")
 def export_events_to_excel(
     db: Session = Depends(get_db),
     event_type: str | None = Query(None),
     description: str | None = Query(None),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    user=Depends(require_role("uploader")),  # idem, se puede cambiar a 'admin'
+    user: Dict[str, Any] = Depends(require_role("uploader")),
 ):
     query = db.query(EventLog)
-
-    if event_type:
-        query = query.filter(EventLog.event_type == event_type)
-
-    if description:
-        query = query.filter(EventLog.description.ilike(f"%{description}%"))
-
-    if date_from:
-        query = query.filter(EventLog.created_at >= date_from)
-
-    if date_to:
-        query = query.filter(EventLog.created_at <= date_to)
+    query = _apply_filters(query, event_type, description, date_from, date_to)
 
     events = query.order_by(EventLog.created_at.desc()).all()
 
@@ -101,13 +103,11 @@ def export_events_to_excel(
 
     output.seek(0)
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
     filename = f"eventos_{timestamp}.xlsx"
 
     return StreamingResponse(
         output,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

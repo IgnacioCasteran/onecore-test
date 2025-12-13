@@ -1,25 +1,85 @@
 # app/routers/documents.py
-from fastapi import (
-    APIRouter,
-    UploadFile,
-    File,
-    Depends,
-    HTTPException,
-    status,
-    Form,
-)
-from sqlalchemy.orm import Session
-from datetime import datetime
-from io import BytesIO
-import json
+from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from io import BytesIO
+from typing import Any, Dict, Tuple
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+
+from ..ai_utils import analyze_document as analyze_document_ai
+from ..ai_utils import extract_text_from_document
+from ..aws_s3 import save_file
 from ..db import get_db
 from ..models import Document, EventLog
 from ..security import require_role
-from ..aws_s3 import save_file
-from ..ai_utils import extract_text_from_document, analyze_document as analyze_document_ai
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+_ALLOWED_CONTENT_TYPES = {"application/pdf", "image/jpeg", "image/png"}
+
+
+def _utc_now() -> datetime:
+    """Datetime timezone-aware en UTC (evita warnings de utcnow)."""
+    return datetime.now(timezone.utc)
+
+
+def _validate_document_upload(file: UploadFile) -> None:
+    if file.content_type not in _ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solo se permiten archivos PDF, JPG o PNG",
+        )
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El archivo no tiene nombre",
+        )
+
+
+async def _read_upload_file(upload: UploadFile) -> bytes:
+    try:
+        data = await upload.read()
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El archivo está vacío",
+            )
+        return data
+    finally:
+        await upload.close()
+
+
+def _store_in_s3(file_bytes: bytes, filename: str) -> Tuple[str, str]:
+    try:
+        return save_file(BytesIO(file_bytes), filename)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al guardar el archivo: {str(e)}",
+        )
+
+
+def _extract_text(file_bytes: bytes, filename: str) -> str:
+    try:
+        return extract_text_from_document(file_bytes, filename)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al extraer texto del documento: {str(e)}",
+        )
+
+
+def _run_ai_analysis(text: str) -> Dict[str, Any]:
+    try:
+        return analyze_document_ai(text or "")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error en el análisis de IA del documento: {str(e)}",
+        )
 
 
 @router.post(
@@ -31,59 +91,23 @@ async def analyze_document_endpoint(
     file: UploadFile = File(...),
     description: str = Form(""),
     db: Session = Depends(get_db),
-    user=Depends(require_role("uploader")),  # mismo rol que para CSV
+    user: Dict[str, Any] = Depends(require_role("uploader")),
 ):
-    # 1) Validar tipo de archivo
-    allowed_types = {
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-    }
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Solo se permiten archivos PDF, JPG o PNG",
-        )
+    """
+    Sube un documento, lo guarda en S3, extrae texto (PDF->pypdf / imagen->OCR),
+    ejecuta análisis (clasificación + extracción) y persiste en SQL Server.
+    """
+    _validate_document_upload(file)
+    filename = file.filename  # ya validado que existe
+    file_bytes = await _read_upload_file(file)
 
-    # 2) Leer contenido
-    file_bytes: bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El archivo está vacío",
-        )
+    location_type, storage_key = _store_in_s3(file_bytes, filename)
 
-    # 3) Guardar en S3
-    try:
-        location_type, storage_key = save_file(BytesIO(file_bytes), file.filename)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al guardar el archivo: {str(e)}",
-        )
+    text = _extract_text(file_bytes, filename)
+    core_extracted = _run_ai_analysis(text)
 
-    # 4) Extraer texto (usa pypdf si es PDF, Tesseract si es imagen)
-    try:
-        text = extract_text_from_document(file_bytes, file.filename)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al extraer texto del documento: {str(e)}",
-        )
-
-    # 5) Análisis de IA (clasificación + extracción de campos)
-    try:
-        core_extracted = analyze_document_ai(text or "")
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error en el análisis de IA del documento: {str(e)}",
-        )
-
-    # doc_type viene de la IA ("factura" o "informacion")
     doc_type = core_extracted.get("doc_type", "informacion")
 
-    # 6) Datos extraídos finales: campos + descripción + texto bruto
     extracted = {
         **core_extracted,
         "description": description,
@@ -91,29 +115,32 @@ async def analyze_document_endpoint(
     }
     extracted_json = json.dumps(extracted, ensure_ascii=False)
 
-    # 7) Guardar en SQL Server + registro de evento
     try:
         document = Document(
-            filename=file.filename,
+            filename=filename,
             s3_key=storage_key,
             doc_type=doc_type,
             extracted_data=extracted_json,
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
         )
         db.add(document)
 
         event = EventLog(
             event_type="DOC_ANALYSIS",
             description=(
-                f"Documento {file.filename} ({doc_type}) analizado y guardado por "
+                f"Documento {filename} ({doc_type}) analizado y guardado por "
                 f"usuario {user['sub']} ({location_type}:{storage_key})"
             ),
-            created_at=datetime.utcnow(),
+            created_at=_utc_now(),
         )
         db.add(event)
 
         db.commit()
         db.refresh(document)
+
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -121,14 +148,10 @@ async def analyze_document_endpoint(
             detail=f"Error al registrar el documento en la base de datos: {str(e)}",
         )
 
-    # 8) Respuesta
     return {
         "document_id": document.id,
         "filename": document.filename,
         "doc_type": document.doc_type,
-        "storage": {
-            "type": location_type,
-            "key": storage_key,
-        },
-        "extracted": extracted,  # lo mismo que guardamos en extracted_data
+        "storage": {"type": location_type, "key": storage_key},
+        "extracted": extracted,
     }
