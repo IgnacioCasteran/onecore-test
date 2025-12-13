@@ -1,6 +1,8 @@
 # app/ai_utils.py
+from __future__ import annotations
+
 from io import BytesIO
-from typing import Literal, Dict, Any, List
+from typing import Literal, Dict, Any, List, Optional
 import os
 import re
 
@@ -16,6 +18,42 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 DocType = Literal["factura", "informacion"]
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+def _to_float(s: str) -> float:
+    """
+    Convierte números tipo:
+      - "1.308,80" -> 1308.80
+      - "600,00"   -> 600.00
+      - "1451"     -> 1451.0
+    """
+    s = (s or "").strip()
+    if not s:
+        return 0.0
+    s = s.replace("€", "").replace(" ", "")
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _infer_qty_from_total(price: float, total: float) -> Optional[int]:
+    """
+    Si OCR no capturó la cantidad pero tenemos precio+total,
+    inferimos cantidad = total/price cuando da un entero razonable.
+    """
+    if price <= 0:
+        return None
+    qty = total / price
+    rounded = int(round(qty))
+    # tolerancia por redondeos de OCR
+    if abs(qty - rounded) < 0.05 and 1 <= rounded <= 10_000:
+        return rounded
+    return None
 
 
 # =========================================================
@@ -39,25 +77,24 @@ def _extract_with_tesseract_image(file_bytes: bytes) -> str:
 
 def extract_text_from_document(file_bytes: bytes, filename: str) -> str:
     """
-    Extrae texto del documento (PDF -> pypdf, imágenes -> Tesseract).
+    Extrae texto del documento:
+    - PDF -> pypdf
+    - imágenes -> Tesseract
     """
-    name = filename.lower()
+    name = (filename or "").lower()
     _, ext = os.path.splitext(name)
 
-    # PDF
     if ext == ".pdf":
         try:
             reader = PdfReader(BytesIO(file_bytes))
             texts: List[str] = []
             for page in reader.pages:
-                page_text = page.extract_text() or ""
-                texts.append(page_text)
+                texts.append(page.extract_text() or "")
             return "\n".join(texts)
         except Exception as e:
             print(f"[PDF] Error al extraer texto con pypdf: {e}")
             return ""
 
-    # Imágenes
     if ext in (".jpg", ".jpeg", ".png"):
         return _extract_with_tesseract_image(file_bytes)
 
@@ -71,7 +108,7 @@ def classify_document(text: str) -> DocType:
     """
     Clasificación simple por palabras clave.
     """
-    text_lower = text.lower()
+    text_lower = (text or "").lower()
 
     invoice_keywords = [
         "factura",
@@ -88,88 +125,134 @@ def classify_document(text: str) -> DocType:
     ]
 
     score = sum(1 for kw in invoice_keywords if kw in text_lower)
-    if score >= 2:
-        return "factura"
-    return "informacion"
+    return "factura" if score >= 2 else "informacion"
 
 
-# --------------------------------------------------------------------
+# =========================================================
 # Ítems de factura (líneas de tabla)
-# --------------------------------------------------------------------
-# Nuevo REGEX tolerante a ruido entre descripción y cantidad
+# =========================================================
+
+# Regex general: Código + descripción + cantidad + precio + total
 _item_line_regex = re.compile(
     r"""
     ^\s*
-    (?P<codigo>\w+)\s+                        # Código: Producto
-    (?P<descripcion>[\w\s\-\~\.]+?)\s+        # Descripción (tolerante a "~" y ruido)
-    (?P<cantidad>\d+)\s+                      # Cantidad (SIEMPRE un número)
-    (?P<precio>\d+(?:[.,]\d{1,2})?)\s+        # Precio unitario
-    (?P<total>\d+(?:[.,]\d{1,2})?)            # Total
+    (?P<codigo>\w+)\s+
+    (?P<descripcion>[\w\s\-\~\.]+?)\s+
+    (?P<cantidad>\d+)\s+
+    (?P<precio>\d+(?:[.,]\d{1,2})?)\s+
+    (?P<total>\d+(?:[.,]\d{1,2})?)
     \s*$
     """,
     re.VERBOSE,
 )
 
-
-# 2) Patrón específico para la factura azul (Producto 1/2/3)
+# Regex específico para "Producto 1 2 100 200,00" con basura OCR entre medio
 _product_line_regex = re.compile(
     r"""
     ^\s*
-    (?P<codigo>Producto)\s*          # Literal 'Producto'
-    (?P<descripcion>\d+)\s*          # Nº de producto (1,2,3)
-    [^\d]*                           # Basura del OCR (~, -, etc.)
-    (?P<cantidad>\d+)\s+             # Cantidad
-    (?P<precio>\d+(?:[.,]\d*)?)\s+   # Precio unitario (100 o 100,00)
-    (?P<total>\d+(?:[.,]\d*)?)       # Total (200 o 200,00)
+    (?P<codigo>Producto)\s*
+    (?P<descripcion>\d+)\s*
+    [^\d]*                              # ruido OCR (~, -, etc)
+    (?P<cantidad>\d+)\s+
+    (?P<precio>\d+(?:[.,]\d*)?)\s+
+    (?P<total>\d+(?:[.,]\d*)?)
+    \s*$
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Caso OCR roto: "Producto 2 ~ 150 600,00" (sin cantidad)
+_product_line_noqty_regex = re.compile(
+    r"""
+    ^\s*
+    (?P<codigo>Producto)\s*
+    (?P<descripcion>\d+)\s*
+    [^\d]+
+    (?P<precio>\d+(?:[.,]\d*)?)\s+
+    (?P<total>\d+(?:[.,]\d*)?)
     \s*$
     """,
     re.VERBOSE | re.IGNORECASE,
 )
 
 
-def _to_float(s: str) -> float:
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
 def _parse_invoice_items(text: str) -> List[Dict[str, Any]]:
-    items = []
+    """
+    Parsea ítems de factura desde el texto OCR / PDF.
+    Estrategia:
+      1) Intentar patrón "Producto X ..." (factura azul)
+      2) Intentar patrón genérico
+      3) Intentar patrón "Producto X ~ precio total" e inferir cantidad
+    """
+    items: List[Dict[str, Any]] = []
 
-    for raw_line in text.splitlines():
+    for raw_line in (text or "").splitlines():
         line = raw_line.strip()
         if not line:
             continue
 
-        m = _item_line_regex.match(line)
-        if not m:
+        # 1) Patrón específico factura azul (con cantidad)
+        m = _product_line_regex.match(line)
+        if m:
+            codigo = m.group("codigo").strip()
+            descripcion = m.group("descripcion").strip()
+            cantidad = int(m.group("cantidad"))
+            precio = _to_float(m.group("precio"))
+            total = _to_float(m.group("total"))
+            items.append(
+                {
+                    "codigo": codigo,
+                    "descripcion": descripcion,
+                    "cantidad": cantidad,
+                    "precio_unitario": precio,
+                    "total": total,
+                }
+            )
             continue
 
-        def _to_float(s: str) -> float:
-            s = s.replace(".", "").replace(",", ".")
-            try:
-                return float(s)
-            except:
-                return 0.0
+        # 2) Patrón genérico
+        m = _item_line_regex.match(line)
+        if m:
+            codigo = m.group("codigo").strip()
+            descripcion = m.group("descripcion").strip(" -~")
+            cantidad = int(m.group("cantidad"))
+            precio = _to_float(m.group("precio"))
+            total = _to_float(m.group("total"))
+            items.append(
+                {
+                    "codigo": codigo,
+                    "descripcion": descripcion,
+                    "cantidad": cantidad,
+                    "precio_unitario": precio,
+                    "total": total,
+                }
+            )
+            continue
 
-        codigo = m.group("codigo")
-        descripcion = m.group("descripcion").strip(" -~")
-        cantidad = int(m.group("cantidad"))
-        precio = _to_float(m.group("precio"))
-        total = _to_float(m.group("total"))
+        # 3) Patrón factura azul SIN cantidad -> inferir cantidad
+        m = _product_line_noqty_regex.match(line)
+        if m:
+            codigo = m.group("codigo").strip()
+            descripcion = m.group("descripcion").strip()
+            precio = _to_float(m.group("precio"))
+            total = _to_float(m.group("total"))
 
-        items.append({
-            "codigo": codigo,
-            "descripcion": descripcion,
-            "cantidad": cantidad,
-            "precio_unitario": precio,
-            "total": total,
-        })
+            inferred = _infer_qty_from_total(precio, total)
+            if inferred is None:
+                continue
+
+            items.append(
+                {
+                    "codigo": codigo,
+                    "descripcion": descripcion,
+                    "cantidad": inferred,
+                    "precio_unitario": precio,
+                    "total": total,
+                }
+            )
+            continue
 
     return items
-
 
 
 # =========================================================
@@ -179,13 +262,9 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
     """
     Extracción básica de datos de una factura usando heurísticas y regex.
     """
-    tl = text.lower()
+    tl = (text or "").lower()
 
     def find_after_any(labels, max_chars: int = 100) -> str:
-        """
-        Busca cualquiera de los labels (lista de strings) en el texto en minúsculas
-        y devuelve la primera línea no vacía que aparezca a continuación.
-        """
         if isinstance(labels, str):
             labels_list = [labels]
         else:
@@ -195,25 +274,24 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
             idx = tl.find(label)
             if idx == -1:
                 continue
-            fragment = text[idx + len(label): idx + len(label) + max_chars]
+            fragment = text[idx + len(label) : idx + len(label) + max_chars]
             for line in fragment.splitlines():
                 line = line.strip(" :;-•\t")
                 if line:
                     return line
         return ""
 
-    # ---------------- CLIENTE ----------------
-    cliente = find_after_any(["cliente", "client"])
-    if not cliente:
-        cliente = find_after_any(["razón social", "razon social"])
+    # CLIENTE
+    cliente = find_after_any(["cliente", "client"]) or find_after_any(
+        ["razón social", "razon social"]
+    )
 
-    # ---------------- PROVEEDOR / EMISOR ----------------
+    # PROVEEDOR
     proveedor = find_after_any(["emisor", "proveedor", "vendedor"])
     if not proveedor:
         proveedor = find_after_any(["razón social", "razon social"])
 
-    # Heurística extra para la factura azul:
-    # línea tipo "Orlando Juan Loban Empresa de logistica, S. L."
+    # Heurística factura azul: "Orlando ... Empresa de logística..."
     if (not cliente or not proveedor) and "empresa de" in tl:
         for raw_line in text.splitlines():
             if "empresa de" in raw_line.lower():
@@ -224,16 +302,12 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
                     flags=re.IGNORECASE,
                 )
                 if m:
-                    if not cliente:
-                        cliente = m.group("cli").strip()
-                    if not proveedor:
-                        proveedor = m.group("prov").strip()
+                    cliente = cliente or m.group("cli").strip()
+                    proveedor = proveedor or m.group("prov").strip()
                     break
 
-    # ---------------- NÚMERO DE FACTURA ----------------
+    # NÚMERO FACTURA
     numero_factura = ""
-
-    # 1) patrón específico: "Número de factura: 2024-0001"
     m = re.search(
         r"(?:n[uú]mero\s+de\s+factura|numero\s+de\s+factura)"
         r"[^\S\r\n]*[:#\-]?\s*([A-Z0-9\-/\.]+)",
@@ -243,7 +317,6 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
     if m:
         numero_factura = m.group(1).strip()
 
-    # 2) otras formas típicas
     if not numero_factura:
         m = re.search(
             r"(?:n[°ºo]\s*factura|nro\.?\s*factura|factura\s*n[°ºo]?)"
@@ -254,14 +327,13 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
         if m:
             numero_factura = m.group(1).strip()
 
-    # 3) fallback
     if not numero_factura:
         numero_factura = find_after_any(
             ["n° factura", "no. factura", "nro factura", "n° comprobante"],
             max_chars=40,
         )
 
-    # ---------------- FECHA ----------------
+    # FECHA
     fecha = ""
     m = re.search(
         r"(fecha\s+(?:emisi[oó]n|factura|comprobante)[^\d]{0,15})"
@@ -276,7 +348,7 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
         if m:
             fecha = m.group(1).strip()
 
-    # ---------------- TOTAL ----------------
+    # TOTAL
     total = ""
     for line in text.splitlines():
         line_lower = line.lower()
@@ -285,13 +357,12 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
             if nums:
                 total = nums[-1].strip()
 
-    # Fallback: si no encontró "total", tomar el último número grande del texto
     if not total:
         nums = re.findall(r"(\d[\d\.,]*)", text)
         if nums:
             total = nums[-1].strip()
 
-    # ---------------- ÍTEMS ----------------
+    # ÍTEMS
     items = _parse_invoice_items(text)
 
     return {
@@ -305,16 +376,13 @@ def extract_invoice_data(text: str) -> Dict[str, Any]:
 
 
 # =========================================================
-# ANÁLISIS PARA DOCUMENTOS DE INFORMACIÓN GENERAL
+# ANÁLISIS DOCUMENTOS DE INFORMACIÓN
 # =========================================================
 def simple_sentiment(text: str) -> str:
-    """
-    'Análisis de sentimiento' básico.
-    """
     positive_words = ["bueno", "excelente", "positivo", "satisfactorio", "feliz"]
     negative_words = ["malo", "negativo", "problema", "queja", "insatisfecho"]
 
-    tl = text.lower()
+    tl = (text or "").lower()
     pos_score = sum(tl.count(w) for w in positive_words)
     neg_score = sum(tl.count(w) for w in negative_words)
 
@@ -326,22 +394,14 @@ def simple_sentiment(text: str) -> str:
 
 
 def summarize(text: str, max_sentences: int = 3) -> str:
-    """
-    Resumen muy sencillo: primeras N oraciones separadas por punto.
-    """
-    sentences = [s.strip() for s in text.split(".") if s.strip()]
+    sentences = [s.strip() for s in (text or "").split(".") if s.strip()]
     return ". ".join(sentences[:max_sentences])
 
 
 # =========================================================
-# FUNCIÓN PRINCIPAL DE ANÁLISIS
+# FUNCIÓN PRINCIPAL
 # =========================================================
 def analyze_document(text: str) -> Dict[str, Any]:
-    """
-    - Clasifica el documento.
-    - Si es factura, devuelve campos de factura (incluyendo ítems).
-    - Si es información, devuelve descripción, resumen y sentimiento.
-    """
     doc_type: DocType = classify_document(text)
 
     if doc_type == "factura":
@@ -349,19 +409,18 @@ def analyze_document(text: str) -> Dict[str, Any]:
         return {
             "doc_type": doc_type,
             "kind": "factura",
-            "raw_text_length": len(text),
+            "raw_text_length": len(text or ""),
             **invoice_data,
         }
 
-    # Información general
-    description = text[:200].replace("\n", " ")
+    description = (text or "")[:200].replace("\n", " ")
     summary = summarize(text, max_sentences=3)
     sentiment = simple_sentiment(text)
 
     return {
         "doc_type": doc_type,
         "kind": "informacion",
-        "raw_text_length": len(text),
+        "raw_text_length": len(text or ""),
         "description": description,
         "summary": summary,
         "sentiment": sentiment,
